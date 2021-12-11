@@ -1,0 +1,257 @@
+---
+title: 'Project 2: Data Mining, Classification, Prediction'
+author: "SDS322E"
+date: ''
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F,
+tidy=TRUE, tidy.opts=list(width.cutoff=60), R.options=list(max.print=100))
+
+class_diag <- function(score, truth, positive, cutoff=.5){
+
+  pred <- factor(score>cutoff,levels=c("TRUE","FALSE"))
+  truth <- factor(truth==positive, levels=c("TRUE","FALSE"))
+
+  tab<-table(truth, pred)
+  acc=sum(diag(tab))/sum(tab)
+  sens=tab[1,1]/rowSums(tab)[1]
+  spec=tab[2,2]/rowSums(tab)[2]
+  ppv=tab[1,1]/colSums(tab)[1]
+
+#CALCULATE F1
+  f1=2*(sens*ppv)/(sens+ppv)
+  
+#CALCULATE EXACT AUC
+  truth<-as.numeric(truth=="TRUE")
+  ord<-order(score, decreasing=TRUE)
+  score <- score[ord]; truth <- truth[ord]
+  TPR=cumsum(truth)/max(1,sum(truth))
+  FPR=cumsum(!truth)/max(1,sum(!truth))
+  dup<-c(score[-1]>=score[-length(score)], FALSE)
+  TPR<-c(0,TPR[!dup],1); FPR<-c(0,FPR[!dup],1)
+  n <- length(TPR)
+  auc<- sum( ((TPR[-1]+TPR[-n])/2) * (FPR[-1]-FPR[-n]) )
+  round(data.frame(acc,sens,spec,ppv,f1,ba=(sens+spec)/2,auc, row.names = "Metrics"),4)
+}
+```
+
+# Mining, Classification, Prediction
+
+## Anita Rhodes, aar4395
+
+### Introduction 
+
+Paragraph or two introducing your datasets and variables, why they are interesting to you, etc. See instructions for more information
+
+The Original_Crabs dataset contains age, sex, height, length, diameter, and weight data on crabs in the Boston area. The weight data is separated into weight, shucked weight, viscera (internal organs) weight, and shell weight. For the sex variable, there are 3 different inputs--M (male), F (female), and I (indeterminate). In total, there are 3893 observations with 1435 for male, 1225 for female, and 1233 for indeterminate. The indeterminate observations were removed, resulting in the Crabs dataset with a total of 2660 observations.
+
+Assuming there is a relationship between crap age and these various physical characteristic variables, this information could be very interesting/applicable to those in the crab farming industry.
+```{R}
+library(tidyverse)
+# read your datasets in here, e.g., with read_csv()
+Original_Crabs <- read_csv("CrabAgePrediction.csv")
+Original_Crabs %>% group_by(Sex) %>% summarise(n())
+
+# if your dataset needs tidying, do so here
+Original_Crabs %>% subset(Sex!="I") -> Crabs 
+ 
+Crabs<- rename(Crabs, ShellWeight=`Shell Weight`,VisceraWeight=`Viscera Weight`, ShuckedWeight=`Shucked Weight`)
+Crabs <- Crabs %>% na.omit()
+class_dat<-Crabs %>% select(Sex,Length:ShellWeight)
+class_dat <- class_dat %>% mutate(Sex = ifelse(Sex=="F", 1, 0))
+# any other code here
+```
+
+### Cluster Analysis
+
+```{R}
+library(cluster)
+library(GGally)
+# clustering code here
+sil_width <- vector()
+for (i in 2:10) {
+    pam_fit <- pam(Crabs, k = i)
+    sil_width[i] <- pam_fit$silinfo$avg.width
+}
+ggplot() + geom_line(aes(x = 1:10, y = sil_width)) + 
+    scale_x_continuous(name = "k", breaks = 1:10)  #use k=2
+
+
+Crab_pam <-Crabs %>% pam(k = 2)
+plot(Crab_pam, which = 2)
+
+Crabs %>% mutate(cluster=as.factor(Crab_pam$clustering)) %>% ggpairs(columns=2:9,aes(color=cluster))
+```
+
+Discussion of clustering here
+With an average cluster silhouette of 0.48, the cluster solution is essentially in the middle between a reasonable and weak structure. Cluster 1 crabs (salmon colored) are light and have low lengths and diameters. While the heights are pretty equal for both clusters, this indicates that cluster 1 crabs are generally much smaller. Therefore, cluster 2 crabs are heavier with higher lengths and diameter.
+    
+### Dimensionality Reduction with PCA
+
+```{R}
+ggplot(Crabs, aes(x = Age, y = Weight))+geom_point()
+Crabnums <- Crabs %>% select_if(is.numeric) %>% scale
+
+Crab_PCA <- princomp(Crabnums, center=T, cor = T)
+summary(Crab_PCA, loadings=T)
+
+eigval<-Crab_PCA$sdev^2
+varprop=round(eigval/sum(eigval), 2)
+
+ggplot() + geom_bar(aes(y=varprop, x=1:8), stat="identity") + xlab("") + geom_path(aes(y=varprop, x=1:8)) +
+  geom_text(aes(x=1:8, y=varprop, label=round(varprop, 2)), vjust=1, col="white", size=5) +
+  scale_y_continuous(breaks=seq(0, .6, .2), labels = scales::percent) + 
+  scale_x_continuous(breaks=1:10)
+round(cumsum(eigval)/sum(eigval), 2) #keep 2 PCs
+
+library(factoextra)
+fviz_pca_biplot(Crab_PCA)
+```
+
+PC1 is the general physical character data, so the higher the PC1 value, the stronger the variable is overall. PC2 is shucked/viscera weight vs shell weight and age. This means that the higher the shucked/viscera weight, the lower the shell weight and age, and vice versa. Further, 89.3% of the variance in Crabs is due to PC1 and PC2.
+
+###  Linear Classifier
+
+```{R}
+# linear classifier code here
+glm(Sex ~ . , data=class_dat, family="binomial") 
+fit <- glm(Sex ~ . , data=class_dat, family="binomial")
+probs <- predict(fit, type="response") #predictions
+class_diag(probs, class_dat$Sex, positive=1) #performance
+table(truth = class_dat$Sex, predictions = probs>.5) #confusion matrix
+
+```
+
+```{R}
+# cross-validation of linear classifier here
+
+set.seed(1234)
+k=10
+data<-class_dat[sample(nrow(class_dat)),]
+folds<-cut(seq(1:nrow(class_dat)),breaks = k,labels = F)
+
+diags<-NULL
+for(i in 1:k){
+  ## Create training and test sets
+  train<-data[folds!=i,] 
+  test<-data[folds==i,]
+  truth<-test$Sex
+  ## Train model on training set
+
+  fit<-glm(Sex ~ . , data=train, family="binomial") 
+  probs<-predict(fit,newdata = test,type="response")
+  ## Test model on test set (save all k results)
+  diags<-rbind(diags,class_diag(probs,truth, positive=1))
+}
+
+summarise_all(diags,mean)
+```
+
+For both the linear regression and CV this model is predicting observations badly giving the AUC values of .581 and .571 respectively. However, these AUC values are very close to each other indicating that there is no overfitting. 
+
+### Non-Parametric Classifier
+
+```{R}
+library(caret)
+# non-parametric classifier code here
+
+knn_fit <- knn3(Sex ~ ., data=class_dat, k=15)
+probs <- predict(knn_fit, newdata=class_dat)[,2] #we choose the second column since that's the probability of "True"
+class_diag(probs, class_dat$Sex, positive=1) 
+table(truth = class_dat$Sex, predictions = probs>.5)
+
+```
+
+```{R}
+# cross-validation of np classifier here
+
+set.seed(1234)
+k=15
+data<-class_dat[sample(nrow(class_dat)),]
+folds<-cut(seq(1:nrow(class_dat)),breaks = k,labels = F)
+
+diags<-NULL
+for(i in 1:k){
+  ## Create training and test sets
+  train<-data[folds!=i,] 
+  test<-data[folds==i,]
+  truth<-test$Sex
+  ## Train model on training set
+
+  knn_fit<-knn3(Sex ~ ., data=train) 
+  probs<-predict(knn_fit,newdata = test)[,2]
+  ## Test model on test set (save all k results)
+  diags<-rbind(diags,class_diag(probs,truth, positive=1))
+}
+
+summarise_all(diags,mean)
+```
+The non-parametric classifier is predicting observations poorly with an AUC value of .667. Meanwhile, the cross-validation is predicting badly with an AUC of only .532. Given that the CV predictions are worse than the classifier, overfitting may be occurring in this model. Further, the non-parametric classifier predicts observations better than the linear classifier when trained to the dataset, but worse when it comes to cross-validation.
+
+
+### Regression/Numeric Prediction
+
+```{R}
+# regression model code here
+fit<-lm(Age~.,data=Crabs)
+yhat<-predict(fit)
+mean((Crabs$Age-yhat)^2) #MSE is 5.68
+```
+
+```{R}
+# cross-validation of regression model here
+k=10 #choose number of folds
+data<-Crabs[sample(nrow(Crabs)),] #randomly order rows
+folds<-cut(seq(1:nrow(Crabs)),breaks=k,labels=F) #create folds
+diags<-NULL
+for(i in 1:k){
+  train<-data[folds!=i,]
+  test<-data[folds==i,]
+  ## Fit linear regression model to training set
+  fit<-lm(Age~.,data=train)
+  ## Get predictions/y-hats on test set (fold i)
+  yhat<-predict(fit,newdata=test)
+  ## Compute prediction error  (MSE) for fold i
+  diags<-mean((test$Age-yhat)^2) 
+}
+mean(diags) #average MSE is 6.56
+```
+
+The MSE value for the linear regression predicting crab age from physical measurements was 5.68 overall and 6.56 for the cross-validation. These values are fairly close together, but given that the CV MSE was higher, there may be a small amount of overfitting here.
+
+### Python 
+
+```{R}
+library(reticulate)
+use_python("/usr/bin/python3", required = F)
+Age_dat<-Crabs$Age
+py$Age_range
+```
+
+```{python}
+# python code here
+Age_dat=r.Age_dat
+min(Age_dat)
+max(Age_dat)
+Age_range=max(Age_dat)-min(Age_dat)
+
+```
+
+'Age_dat'was created in R containing all crab age values then accessed in python. In python, the range of age values was calculated and saved as 'Age_range'. 'Age_range' was then accessed in the R chunk, showing that you can pass data and make calculations between r and python. 
+
+### Concluding Remarks
+
+Overall, each of the models and clustering had quite poor results. This may indicate that there is a very poor or weak relationship between crab measurements (length, weight, height, etc) and sex or age. 
+
+
+
+
